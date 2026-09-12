@@ -2,6 +2,35 @@
 
 Formato de versiones: hitos del plan (`docs/plan/ROADMAP.md`).
 
+## F2 — diffs por commit + churn + panel de barras (2026-09-12)
+
+- `engine/git/diff.rs`: `diff_tree_to_tree` de gix con `track_rewrites`
+  (renames como `git -M`), políticas ALGORITHMS §0: merges sin diff,
+  renames imputados a ruta nueva, binarios/gitlinks = touch sin líneas.
+- `engine/metrics/churn.rs`: `Window` + `churn()` puros, 3 tests.
+- `FileStat`/`CommitRecord`/`PathInterner` en el modelo.
+- UI: vista Churn (tecla `2`) con top-20 en barras de bloques; `scan`
+  imprime top-10 churn.
+- `tests/debug_tui.rs`: diagnóstico `#[ignore]` para auditar un repo real.
+
+### Números medidos
+
+| Repo | Commits | Scan con diffs |
+|---|---|---|
+| git-hero | 58 | ~0.5 s |
+| bench sintético | 10 000 | **7.9 s single-thread** |
+
+Verificación: top-5 churn idéntico a `git log --numstat` (4080/2554/2271/
+2150/1916). El 7.9 s es el número que justifica la caché de F3.
+
+### Bugs de gix cazados en la fase (para el lector)
+
+- `diff_tree_to_tree` reporta el Addition de un directorio Y el de cada
+  archivo anidado: expandir ambos duplica el churn (~2× en el commit
+  inicial de git-hero). Solución: ignorar cambios con `entry_mode.is_tree()`.
+- Submódulos (gitlink, mode COMMIT): `try_into_blob` falla → tratar oid
+  no-blob como touch binario.
+
 ## F1 — gix walk + `gadv scan` (2026-09-12)
 
 - `engine/git/walk.rs`: BFS sobre el DAG desde HEAD con `HashSet<[u8;20]>`,

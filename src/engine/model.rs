@@ -18,23 +18,38 @@ pub struct AuthorInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AuthorId(pub u32);
 
-/// Commit ya reducido a lo que consumen las métricas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileId(pub u32);
+
+/// Cambio que un commit introdujo en una ruta.
 #[derive(Debug, Clone, Copy)]
-pub struct CommitMeta {
+pub struct FileStat {
+    pub file: FileId,
+    pub adds: u32,
+    pub dels: u32,
+    /// Archivo binario: sin conteo de líneas, solo "touch" (ALGORITHMS §0).
+    pub binary: bool,
+}
+
+/// Commit ya reducido a lo que consumen las métricas.
+#[derive(Debug, Clone)]
+pub struct CommitRecord {
     pub oid: Oid,
     /// Epoch seconds del AUTOR (ventanas temporales = aritmética entera).
     pub time: i64,
     pub author: AuthorId,
     /// 0 = raíz, 1 = normal, ≥2 = merge.
     pub n_parents: u8,
+    /// Vacío en merges: los diffs de merge se saltean (ALGORITHMS §0).
+    pub files: Vec<FileStat>,
 }
 
 /// Historial completo ya parseado: la entrada única de todas las métricas.
 #[derive(Debug, Clone, Default)]
 pub struct History {
-    pub commits: Vec<CommitMeta>,
+    pub commits: Vec<CommitRecord>,
     pub authors: Vec<AuthorInfo>,
-    /// Tabla de rutas internadas. Vacío hasta F2 (diffs).
+    /// Tabla de rutas internadas.
     pub paths: Vec<String>,
 }
 
@@ -80,6 +95,27 @@ impl AuthorInterner {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct PathInterner {
+    map: HashMap<String, u32>,
+    list: Vec<String>,
+}
+
+impl PathInterner {
+    pub fn intern(&mut self, path: &str) -> FileId {
+        let next = self.list.len() as u32;
+        let id = *self.map.entry(path.to_string()).or_insert_with(|| {
+            self.list.push(path.to_string());
+            next
+        });
+        FileId(id)
+    }
+
+    pub fn into_list(self) -> Vec<String> {
+        self.list
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +131,14 @@ mod tests {
         assert_eq!(it.into_list().len(), 2);
     }
 
+    #[test]
+    fn path_interner_dedups() {
+        let mut it = PathInterner::default();
+        assert_eq!(it.intern("a.rs"), it.intern("a.rs"));
+        assert_ne!(it.intern("a.rs"), it.intern("b.rs"));
+        assert_eq!(it.into_list().len(), 2);
+    }
+
     fn hist_with(counts: &[(u32, usize)]) -> History {
         let mut authors = Vec::new();
         let mut commits = Vec::new();
@@ -105,11 +149,12 @@ mod tests {
                 email: String::new(),
             });
             for _ in 0..n {
-                commits.push(CommitMeta {
+                commits.push(CommitRecord {
                     oid: [0; 20],
                     time: 0,
                     author,
                     n_parents: 1,
+                    files: Vec::new(),
                 });
             }
         }

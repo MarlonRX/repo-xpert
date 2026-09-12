@@ -1,8 +1,7 @@
 // ── UI (presentación) ────────────────────────────────────────────────
-// F0: shell mínimo — setup/teardown de terminal (del fork, recortado),
-// loop de eventos y una tarjeta con repo + HEAD. Sin operaciones, sin
-// askpass, sin modales de push/pull, sin consola (corte de cordón).
-// El consumo real del engine llega en F1+ (paneles de métricas).
+// F2: dos vistas — resumen (F0/F1) y churn con barras de bloques.
+// El consumo del engine es síncrono en `r` todavía; el worker + caché
+// llega en F3. Nada de operaciones: corte de cordón (DECISIONS §2A).
 
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
@@ -23,10 +22,16 @@ use ratatui::{
 };
 
 use gadv::config::{self, Config};
-use gadv::engine;
+use gadv::engine::{self, History, Window, churn};
 use gadv::log;
 use gadv::theme::{self, Theme};
 use gadv::version;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Summary,
+    Churn,
+}
 
 pub struct App {
     pub repo_path: PathBuf,
@@ -38,6 +43,10 @@ pub struct App {
     pub commits: String,
     pub status: String,
     pub scans: u32,
+    pub view: View,
+    /// (path, churn, touches) top-20 ya ordenado, listo para pintar.
+    pub churn_rows: Vec<(String, u32, u32)>,
+    history: Option<History>,
 }
 
 impl App {
@@ -52,6 +61,9 @@ impl App {
             commits: String::new(),
             status: String::from("listo"),
             scans: 0,
+            view: View::Summary,
+            churn_rows: Vec::new(),
+            history: None,
         }
     }
 
@@ -59,10 +71,30 @@ impl App {
         self.repo_name = engine::repo_name(&self.repo_path);
         self.head = engine::head_raw(&self.repo_path);
         let t0 = Instant::now();
-        self.commits = match engine::scan_history(&self.repo_path, self.max_commits) {
-            Ok(h) => format!("{} commits en {} ms", h.commits.len(), t0.elapsed().as_millis()),
-            Err(err) => err.to_string(),
-        };
+        match engine::scan_history(&self.repo_path, self.max_commits) {
+            Ok(h) => {
+                let rows = churn(&h, Window::ALL);
+                self.churn_rows = rows
+                    .into_iter()
+                    .take(20)
+                    .map(|r| {
+                        let path = h
+                            .paths
+                            .get(r.file.0 as usize)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", r.file.0));
+                        (path, r.churn(), r.touches)
+                    })
+                    .collect();
+                self.commits = format!("{} commits en {} ms", h.commits.len(), t0.elapsed().as_millis());
+                self.history = Some(h);
+            }
+            Err(err) => {
+                self.commits = err.to_string();
+                self.churn_rows.clear();
+                self.history = None;
+            }
+        }
         self.scans += 1;
         self.status = format!("refrescado ×{}", self.scans);
     }
@@ -127,9 +159,19 @@ fn event_loop(
                 continue;
             }
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Char('q') => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
+                }
+                KeyCode::Esc => match app.view {
+                    View::Churn => app.view = View::Summary,
+                    View::Summary => return Ok(()),
+                },
+                KeyCode::Char('1') => app.view = View::Summary,
+                KeyCode::Char('2') => {
+                    if app.history.is_some() {
+                        app.view = View::Churn;
+                    }
                 }
                 KeyCode::Char('r') => {
                     let t0 = Instant::now();
@@ -147,17 +189,27 @@ fn event_loop(
 fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     let t = &app.theme;
-    let bg = Style::default().bg(t.background);
-    f.render_widget(Paragraph::new("").style(bg), area);
+    f.render_widget(Paragraph::new("").style(Style::default().bg(t.background)), area);
+    match app.view {
+        View::Summary => draw_summary(f, app, area),
+        View::Churn => draw_churn(f, app, area),
+    }
+}
 
-    let width = area.width.saturating_sub(2).clamp(36, 72);
-    let height = area.height.saturating_sub(2).clamp(9, 14);
-    let outer = Rect {
-        x: (area.width - width) / 2,
-        y: (area.height - height) / 2,
+fn centered(area: Rect, min_w: u16, max_w: u16, min_h: u16, max_h: u16) -> Rect {
+    let width = area.width.saturating_sub(2).clamp(min_w, max_w).min(area.width);
+    let height = area.height.saturating_sub(2).clamp(min_h, max_h).min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
         width,
         height,
-    };
+    }
+}
+
+fn draw_summary(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let outer = centered(area, 36, 72, 10, 15);
     draw_solid_border(f, outer, t);
 
     let label = |s: &'static str| Span::styled(s, Style::default().fg(t.dimmed));
@@ -201,7 +253,7 @@ fn draw(f: &mut Frame, app: &App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "walk gix activo · q/Esc salir · r refrescar",
+            "1 resumen · 2 churn · r refrescar · q/Esc salir",
             Style::default().fg(t.dimmed),
         )),
         Line::from(Span::styled(app.status.clone(), Style::default().fg(t.warning))),
@@ -217,6 +269,66 @@ fn draw(f: &mut Frame, app: &App) {
         Paragraph::new(lines).style(Style::default().bg(t.background).fg(t.foreground)),
         inner,
     );
+}
+
+fn draw_churn(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let outer = centered(area, 40, 100, 10, 28);
+    draw_solid_border(f, outer, t);
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+        format!(" churn — top {} (adds+dels, historial completo) ", app.churn_rows.len()),
+        Style::default().fg(t.dimmed),
+    ))];
+
+    if app.churn_rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " sin datos: r para escanear ",
+            Style::default().fg(t.warning),
+        )));
+    } else {
+        let max = app.churn_rows.iter().map(|(_, c, _)| *c).max().unwrap_or(1).max(1);
+        let inner_w = outer.width.saturating_sub(4) as usize;
+        // layout: [path 38][bar hasta 24][número]
+        let path_w = 38.min(inner_w.saturating_sub(10));
+        let bar_w = inner_w.saturating_sub(path_w + 8).clamp(4, 24);
+        for (path, c, touches) in &app.churn_rows {
+            let filled = ((*c as f32 / max as f32) * bar_w as f32).ceil() as usize;
+            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_w - filled));
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<path_w$}", truncate(path, path_w)), Style::default().fg(t.foreground)),
+                Span::styled(format!(" {bar} "), Style::default().fg(t.primary)),
+                Span::styled(format!("{c:>5}"), Style::default().fg(t.accent)),
+                Span::styled(format!(" ×{touches}"), Style::default().fg(t.dimmed)),
+            ]));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        " Esc volver ",
+        Style::default().fg(t.dimmed),
+    )));
+
+    let inner = Rect {
+        x: outer.x + 2,
+        y: outer.y + 1,
+        width: outer.width.saturating_sub(4),
+        height: outer.height.saturating_sub(2),
+    };
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(t.background).fg(t.foreground)),
+        inner,
+    );
+}
+
+fn truncate(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        s.to_string()
+    } else if w > 3 {
+        let head: String = s.chars().take(w - 3).collect();
+        format!("{head}…")
+    } else {
+        s.chars().take(w).collect()
+    }
 }
 
 /// Borde de bloque sólido (del fork, mismo patrón).

@@ -81,5 +81,23 @@ fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool) -> R
         "{}: {n} commits ({merges} merges, {authors} autores) en {ms} ms · top autor: {top}",
         engine::repo_name(repo_path)
     );
+
+    // F2: top-10 churn como verificación rápida del diff engine.
+    let rows = engine::churn(&history, engine::Window::ALL);
+    println!("top churn:");
+    for row in rows.iter().take(10) {
+        let path = history
+            .paths
+            .get(row.file.0 as usize)
+            .map(String::as_str)
+            .unwrap_or("?");
+        println!(
+            "  {:>6}  +{:<5} -{:<5} ×{:<4} {path}",
+            row.churn(),
+            row.adds,
+            row.dels,
+            row.touches
+        );
+    }
     Ok(())
 }

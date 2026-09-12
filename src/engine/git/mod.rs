@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::engine::error::EngineError;
 
+pub mod diff;
 pub mod walk;
 
 pub fn open_repo(path: &Path) -> Result<gix::Repository, EngineError> {

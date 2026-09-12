@@ -8,11 +8,14 @@
 
 pub mod error;
 pub mod git;
+pub mod metrics;
 pub mod model;
 
 pub use error::EngineError;
 pub use git::walk::scan_history;
-pub use model::{AuthorId, AuthorInfo, CommitMeta, History, Oid};
+pub use metrics::Window;
+pub use metrics::churn::{ChurnRow, churn};
+pub use model::{AuthorId, AuthorInfo, CommitRecord, FileId, FileStat, History, Oid};
 
 use std::path::Path;
 
