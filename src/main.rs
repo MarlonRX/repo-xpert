@@ -49,15 +49,15 @@ fn run() -> Result<(), Box<dyn Error>> {
     let cfg = config::load_config();
 
     if scan {
-        return run_scan(&repo_path, &cfg, debug);
+        return run_scan(&repo_path, &cfg, debug, no_cache);
     }
     ui::run(&repo_path, debug, no_cache)
 }
 
-fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool) -> Result<(), Box<dyn Error>> {
+fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool, no_cache: bool) -> Result<(), Box<dyn Error>> {
     let t0 = Instant::now();
-    let history = match engine::scan_history(repo_path, cfg.max_commits) {
-        Ok(h) => h,
+    let outcome = match engine::scan_with_cache(repo_path, cfg.max_commits, !no_cache) {
+        Ok(o) => o,
         // Un repo sin commits no es un error: se reporta y sale limpio.
         Err(EngineError::NoHead) => {
             println!("{}: repo sin commits", engine::repo_name(repo_path));
@@ -65,10 +65,19 @@ fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool) -> R
         }
         Err(other) => return Err(other.into()),
     };
+    let history = &outcome.history;
     let ms = t0.elapsed().as_millis();
     let n = history.commits.len();
     let merges = history.n_merges();
     let authors = history.authors.len();
+    let source = match outcome.source {
+        engine::ScanSource::Cache => "cache",
+        engine::ScanSource::Delta(d) => {
+            println!("delta: +{d} commits nuevos");
+            "delta"
+        }
+        engine::ScanSource::Full => "full",
+    };
     let top = history
         .top_author()
         .map(|(count, a)| format!("{name} <{email}> con {count}", name = a.name, email = a.email))
@@ -78,12 +87,12 @@ fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool) -> R
         log::log_debug(&format!("scan: {n} commits en {ms} ms"));
     }
     println!(
-        "{}: {n} commits ({merges} merges, {authors} autores) en {ms} ms · top autor: {top}",
+        "{}: {n} commits ({merges} merges, {authors} autores) en {ms} ms · fuente: {source} · top autor: {top}",
         engine::repo_name(repo_path)
     );
 
     // F2: top-10 churn como verificación rápida del diff engine.
-    let rows = engine::churn(&history, engine::Window::ALL);
+    let rows = engine::churn(history, engine::Window::ALL);
     println!("top churn:");
     for row in rows.iter().take(10) {
         let path = history

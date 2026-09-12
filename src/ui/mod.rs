@@ -5,6 +5,8 @@
 
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -47,7 +49,12 @@ pub struct App {
     /// (path, churn, touches) top-20 ya ordenado, listo para pintar.
     pub churn_rows: Vec<(String, u32, u32)>,
     history: Option<History>,
+    /// Worker de escaneo (F3): la UI nunca bloquea por el motor.
+    rx: Option<Receiver<ScanResult>>,
+    scanning: bool,
 }
+
+type ScanResult = Result<(History, &'static str, u128), String>;
 
 impl App {
     fn new(repo_path: PathBuf, cfg: &Config, no_cache: bool) -> Self {
@@ -64,37 +71,84 @@ impl App {
             view: View::Summary,
             churn_rows: Vec::new(),
             history: None,
+            rx: None,
+            scanning: false,
         }
     }
 
+    /// Lee lo barato (nombre, HEAD) y lanza el escaneo pesado al worker.
     fn refresh(&mut self) {
         self.repo_name = engine::repo_name(&self.repo_path);
         self.head = engine::head_raw(&self.repo_path);
-        let t0 = Instant::now();
-        match engine::scan_history(&self.repo_path, self.max_commits) {
-            Ok(h) => {
-                let rows = churn(&h, Window::ALL);
-                self.churn_rows = rows
-                    .into_iter()
-                    .take(20)
-                    .map(|r| {
-                        let path = h
-                            .paths
-                            .get(r.file.0 as usize)
-                            .cloned()
-                            .unwrap_or_else(|| format!("#{}", r.file.0));
-                        (path, r.churn(), r.touches)
-                    })
-                    .collect();
-                self.commits = format!("{} commits en {} ms", h.commits.len(), t0.elapsed().as_millis());
-                self.history = Some(h);
+        self.start_scan();
+    }
+
+    fn start_scan(&mut self) {
+        if self.scanning {
+            return;
+        }
+        self.scanning = true;
+        self.status = "escaneando…".into();
+        let (tx, rx) = mpsc::channel();
+        self.rx = Some(rx);
+        let path = self.repo_path.clone();
+        let max = self.max_commits;
+        let use_cache = !self.no_cache;
+        thread::spawn(move || {
+            let t0 = Instant::now();
+            let result = engine::scan_with_cache(&path, max, use_cache).map(|outcome| {
+                let label = match outcome.source {
+                    gadv::engine::ScanSource::Cache => "cache",
+                    gadv::engine::ScanSource::Delta(_) => "delta",
+                    gadv::engine::ScanSource::Full => "full",
+                };
+                (outcome.history, label, t0.elapsed().as_millis())
+            });
+            let _ = tx.send(result.map_err(|e| e.to_string()));
+        });
+    }
+
+    /// Drena el canal: un mensaje por frame basta (el worker manda uno).
+    fn drain_scan(&mut self) {
+        let Some(rx) = &self.rx else { return };
+        match rx.try_recv() {
+            Ok(Ok((history, label, ms))) => {
+                self.apply_history(history, label, ms);
+                self.scanning = false;
+                self.rx = None;
             }
-            Err(err) => {
-                self.commits = err.to_string();
+            Ok(Err(err)) => {
+                self.commits = err;
                 self.churn_rows.clear();
                 self.history = None;
+                self.scanning = false;
+                self.rx = None;
             }
+            Err(TryRecvError::Disconnected) => {
+                self.commits = "worker muerto".into();
+                self.scanning = false;
+                self.rx = None;
+            }
+            Err(TryRecvError::Empty) => {}
         }
+    }
+
+    fn apply_history(&mut self, history: History, label: &'static str, ms: u128) {
+        let rows = churn(&history, Window::ALL);
+        self.churn_rows = rows
+            .into_iter()
+            .take(20)
+            .map(|r| {
+                let path = history
+                    .paths
+                    .get(r.file.0 as usize)
+                    .cloned()
+                    .unwrap_or_else(|| format!("#{}", r.file.0));
+                (path, r.churn(), r.touches)
+            })
+            .collect();
+        self.commits = format!("{} commits en {ms} ms ({label})", history.commits.len());
+        self.history = Some(history);
         self.scans += 1;
         self.status = format!("refrescado ×{}", self.scans);
     }
@@ -147,12 +201,13 @@ fn event_loop(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut first = true;
     loop {
+        app.drain_scan();
         terminal.draw(|f| draw(f, app))?;
         if debug && first {
             log::log_debug("primer frame dibujado");
             first = false;
         }
-        if event::poll(Duration::from_millis(100))?
+        if event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = event::read()?
         {
             if key.kind != KeyEventKind::Press {
@@ -173,13 +228,7 @@ fn event_loop(
                         app.view = View::Churn;
                     }
                 }
-                KeyCode::Char('r') => {
-                    let t0 = Instant::now();
-                    app.refresh();
-                    if debug {
-                        log::log_debug(&format!("refresh en {:?}", t0.elapsed()));
-                    }
-                }
+                KeyCode::Char('r') => app.refresh(),
                 _ => {}
             }
         }

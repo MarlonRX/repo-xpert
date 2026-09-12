@@ -2,6 +2,28 @@
 
 Formato de versiones: hitos del plan (`docs/plan/ROADMAP.md`).
 
+## F3 — caché JSON v1 + worker (2026-09-12)
+
+- `engine/cache.rs`: `scan_with_cache` con envelope `{format_version:1,
+  head_oid, commit_count, authors, paths, records}` en
+  `.git/git-advance/cache.json` (escritura atómica temp+rename).
+- Reglas DECISIONS §3c aplicadas: hex oids, interning en disco, enteros
+  only, versión inválida/corrupción → rebuild, sample `cache_v1_sample.json`
+  congelado por test de contrato.
+- Update incremental con regla de seguridad: el splice solo vale en
+  cached[0] (el viejo HEAD); cualquier otro empalme implica historial
+  reescrito y dispara rebuild honesto (test `rewritten_history_rebuilds`).
+- TUI: escaneo en worker (`thread::spawn` + `mpsc`); la UI nunca bloquea.
+- CLI `scan` reporta fuente: full / delta(N) / cache.
+
+### Números medidos (DoD: segunda apertura <100 ms)
+
+| Pase | 10k commits |
+|---|---|
+| Full (sin cache) | 7.3 s |
+| **Cache hit** | **62–70 ms** ✅ |
+| Delta (1 commit nuevo) | <200 ms |
+
 ## F2 — diffs por commit + churn + panel de barras (2026-09-12)
 
 - `engine/git/diff.rs`: `diff_tree_to_tree` de gix con `track_rewrites`

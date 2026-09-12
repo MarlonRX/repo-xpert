@@ -6,11 +6,13 @@
 // F1: `git::walk::scan_history` sobre gix: DAG completo + autores.
 // F2: diffs por commit (FileStat) y métricas núcleo.
 
+pub mod cache;
 pub mod error;
 pub mod git;
 pub mod metrics;
 pub mod model;
 
+pub use cache::{CacheOutcome, ScanSource, scan_with_cache};
 pub use error::EngineError;
 pub use git::walk::scan_history;
 pub use metrics::Window;

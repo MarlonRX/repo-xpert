@@ -6,23 +6,53 @@
 
 use std::collections::HashMap;
 
-/// Oid crudo SHA-1 (20 bytes). En disco se serializa hex (F3).
+use serde::{Deserialize, Serialize};
+
+/// Oid crudo SHA-1 (20 bytes). En disco se serializa hex (F3, regla 2).
 pub type Oid = [u8; 20];
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Encoding del formato de caché (regla 1): subirlo invalida todo rebuild.
+pub const CACHE_FORMAT_VERSION: u32 = 1;
+
+mod hex_oid {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(oid: &[u8; 20], s: S) -> Result<S::Ok, S::Error> {
+        let mut hex = String::with_capacity(40);
+        for b in oid {
+            hex.push_str(&format!("{b:02x}"));
+        }
+        s.serialize_str(&hex)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 20], D::Error> {
+        let s = String::deserialize(d)?;
+        if s.len() != 40 {
+            return Err(D::Error::custom("oid hex invalido"));
+        }
+        let mut out = [0u8; 20];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(D::Error::custom)?;
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AuthorInfo {
     pub name: String,
     pub email: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AuthorId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FileId(pub u32);
 
 /// Cambio que un commit introdujo en una ruta.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStat {
     pub file: FileId,
     pub adds: u32,
@@ -32,8 +62,9 @@ pub struct FileStat {
 }
 
 /// Commit ya reducido a lo que consumen las métricas.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitRecord {
+    #[serde(with = "hex_oid")]
     pub oid: Oid,
     /// Epoch seconds del AUTOR (ventanas temporales = aritmética entera).
     pub time: i64,
@@ -45,7 +76,7 @@ pub struct CommitRecord {
 }
 
 /// Historial completo ya parseado: la entrada única de todas las métricas.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct History {
     pub commits: Vec<CommitRecord>,
     pub authors: Vec<AuthorInfo>,

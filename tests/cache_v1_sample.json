@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "head_oid": "abababababababababababababababababababab",
+  "commit_count": 2,
+  "authors": [{ "name": "Ana", "email": "ana@example.com" }],
+  "paths": ["src/main.rs", "assets/logo.png"],
+  "records": [
+    {
+      "oid": "abababababababababababababababababababab",
+      "time": 1700000123,
+      "author": 0,
+      "n_parents": 1,
+      "files": [{ "file": 0, "adds": 4, "dels": 1, "binary": false }]
+    },
+    {
+      "oid": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "time": 1700000000,
+      "author": 0,
+      "n_parents": 0,
+      "files": [{ "file": 1, "adds": 0, "dels": 0, "binary": true }]
+    }
+  ]
+}
