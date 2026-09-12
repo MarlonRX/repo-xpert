@@ -22,18 +22,20 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::config::{self, Config};
-use crate::engine;
-use crate::log;
-use crate::theme::{self, Theme};
-use crate::version;
+use gadv::config::{self, Config};
+use gadv::engine;
+use gadv::log;
+use gadv::theme::{self, Theme};
+use gadv::version;
 
 pub struct App {
     pub repo_path: PathBuf,
     pub theme: Theme,
     pub no_cache: bool,
+    pub max_commits: u64,
     pub repo_name: String,
     pub head: String,
+    pub commits: String,
     pub status: String,
     pub scans: u32,
 }
@@ -44,8 +46,10 @@ impl App {
             repo_path,
             theme: theme::get_theme_by_name(&cfg.theme),
             no_cache,
+            max_commits: cfg.max_commits,
             repo_name: String::new(),
             head: String::new(),
+            commits: String::new(),
             status: String::from("listo"),
             scans: 0,
         }
@@ -54,8 +58,13 @@ impl App {
     fn refresh(&mut self) {
         self.repo_name = engine::repo_name(&self.repo_path);
         self.head = engine::head_raw(&self.repo_path);
+        let t0 = Instant::now();
+        self.commits = match engine::scan_history(&self.repo_path, self.max_commits) {
+            Ok(h) => format!("{} commits en {} ms", h.commits.len(), t0.elapsed().as_millis()),
+            Err(err) => err.to_string(),
+        };
         self.scans += 1;
-        self.status = format!("refrescado {} vez", self.scans);
+        self.status = format!("refrescado ×{}", self.scans);
     }
 }
 
@@ -180,6 +189,10 @@ fn draw(f: &mut Frame, app: &App) {
             Span::styled(app.head.clone(), Style::default().fg(t.success)),
         ]),
         Line::from(vec![
+            label("commits"),
+            Span::styled(" ".to_string() + &app.commits, Style::default().fg(t.primary)),
+        ]),
+        Line::from(vec![
             label("cache  "),
             Span::styled(
                 if app.no_cache { "off (--no-cache)" } else { "on" },
@@ -188,7 +201,7 @@ fn draw(f: &mut Frame, app: &App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "motor gix: F1 · q/Esc salir · r refrescar",
+            "walk gix activo · q/Esc salir · r refrescar",
             Style::default().fg(t.dimmed),
         )),
         Line::from(Span::styled(app.status.clone(), Style::default().fg(t.warning))),

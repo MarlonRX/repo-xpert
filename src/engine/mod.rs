@@ -1,9 +1,18 @@
 // ── Engine (puro) ────────────────────────────────────────────────────
-// Motor git → hechos. Nada de ratatui ni std::process acá.
+// Motor git → hechos. Nada de ratatui ni std::process acá (regla 1 de
+// SKELETON). `git/` es el único submódulo que conoce gix.
 //
-// F0: lector crudo de HEAD con std::fs (placeholder honesto).
-// F1: se reemplaza por `engine::git` sobre gix (walk + diffs) y este
-//     módulo queda como hub de la API pública (open/scan/métricas).
+// F0: lector crudo de HEAD con std::fs (placeholder para la TUI).
+// F1: `git::walk::scan_history` sobre gix: DAG completo + autores.
+// F2: diffs por commit (FileStat) y métricas núcleo.
+
+pub mod error;
+pub mod git;
+pub mod model;
+
+pub use error::EngineError;
+pub use git::walk::scan_history;
+pub use model::{AuthorId, AuthorInfo, CommitMeta, History, Oid};
 
 use std::path::Path;
 
