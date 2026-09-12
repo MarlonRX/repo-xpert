@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::engine::error::EngineError;
 
+pub mod blob;
 pub mod diff;
 pub mod walk;
 

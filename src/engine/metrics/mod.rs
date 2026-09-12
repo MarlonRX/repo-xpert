@@ -3,6 +3,7 @@
 // Sin trait Metric todavía: se extrae con la tercera repetición real.
 
 pub mod churn;
+pub mod hotspots;
 
 /// Ventana temporal: `from` es epoch seconds; `None` = todo el historial.
 /// Las ventanas se aplican como filtro sobre la caché, nunca re-ingesta.

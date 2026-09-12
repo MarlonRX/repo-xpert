@@ -108,5 +108,29 @@ fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool, no_c
             row.touches
         );
     }
+
+    // F4: top-5 hotspots (churn × LOC en HEAD, ignorables fuera).
+    let candidates: Vec<(engine::FileId, &str)> = rows
+        .iter()
+        .take(500)
+        .filter_map(|r| history.paths.get(r.file.0 as usize).map(|p| (r.file, p.as_str())))
+        .collect();
+    let locs = engine::head_locs(repo_path, &candidates).unwrap_or_default();
+    let hs = engine::hotspots(
+        history,
+        engine::Window::ALL,
+        &|f| locs.get(&f).copied().unwrap_or(0),
+        &|p| engine::is_ignored(p, &cfg.ignores),
+        5,
+    );
+    println!("top hotspots (churn x LOC):");
+    for h in hs {
+        let path = history
+            .paths
+            .get(h.file.0 as usize)
+            .map(String::as_str)
+            .unwrap_or("?");
+        println!("  {:.2}  churn {:>6}  loc {:>6}  {path}", h.score, h.churn, h.loc);
+    }
     Ok(())
 }

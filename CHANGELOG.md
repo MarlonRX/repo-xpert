@@ -2,6 +2,25 @@
 
 Formato de versiones: hitos del plan (`docs/plan/ROADMAP.md`).
 
+## F4 — hotspots + scatter + ventanas (2026-09-12)
+
+- `engine/git/blob.rs`: LOC en HEAD (resolución de ruta en tree; borrado o
+  binario → 0). Test de conteo con/sin newline final.
+- `engine/metrics/hotspots.rs` (ALGORITHMS §2): candidatos top-K por churn,
+  score = rank_pct(churn) × rank_pct(LOC), `DEFAULT_IGNORES` (lockfiles,
+  vendor, dist, target…). 3 tests: polvo/moleza/hotspot, borrados, ignorables.
+- UI vista `3`: scatter ASCII churn×log2(LOC) con los 3 de mayor score en
+  warning + ranking top-8. Ventanas `t`: todo/90d/30d como filtro sobre la
+  caché (no re-ingesta).
+- CLI `scan` imprime top-5 hotspots.
+
+### Verificación DoD
+
+git-hero: #1 `src/ui/rendering/panels.rs` (churn 1987, loc 1315) y #2
+`src/ui/modals.rs` — los dos archivos que el autor sabe que "hay que tocar
+con cuidado". `scripts/install.sh` (churn alto pero 220 líneas) cae al fondo:
+la fórmula discrimina. Bench 10k: cache 67 ms + hotspots instantáneos.
+
 ## F3 — caché JSON v1 + worker (2026-09-12)
 
 - `engine/cache.rs`: `scan_with_cache` con envelope `{format_version:1,

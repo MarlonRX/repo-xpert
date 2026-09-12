@@ -24,15 +24,42 @@ use ratatui::{
 };
 
 use gadv::config::{self, Config};
-use gadv::engine::{self, History, Window, churn};
+use gadv::engine::{self, FileId, History, Window, churn, head_locs, hotspots, is_ignored};
 use gadv::log;
 use gadv::theme::{self, Theme};
 use gadv::version;
+
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Summary,
     Churn,
+    Hotspot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeWin {
+    All,
+    D90,
+    D30,
+}
+
+impl TimeWin {
+    fn next(self) -> Self {
+        match self {
+            TimeWin::All => TimeWin::D90,
+            TimeWin::D90 => TimeWin::D30,
+            TimeWin::D30 => TimeWin::All,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            TimeWin::All => "todo el historial",
+            TimeWin::D90 => "ultimos 90 dias",
+            TimeWin::D30 => "ultimos 30 dias",
+        }
+    }
 }
 
 pub struct App {
@@ -46,15 +73,19 @@ pub struct App {
     pub status: String,
     pub scans: u32,
     pub view: View,
+    pub window: TimeWin,
     /// (path, churn, touches) top-20 ya ordenado, listo para pintar.
     pub churn_rows: Vec<(String, u32, u32)>,
+    /// (path, churn, loc, score) top-20, para la vista Hotspot.
+    pub hotspot_rows: Vec<(String, u32, u32, f32)>,
+    locs: HashMap<FileId, u32>,
     history: Option<History>,
     /// Worker de escaneo (F3): la UI nunca bloquea por el motor.
     rx: Option<Receiver<ScanResult>>,
     scanning: bool,
 }
 
-type ScanResult = Result<(History, &'static str, u128), String>;
+type ScanResult = Result<(History, HashMap<FileId, u32>, &'static str, u128), String>;
 
 impl App {
     fn new(repo_path: PathBuf, cfg: &Config, no_cache: bool) -> Self {
@@ -69,7 +100,10 @@ impl App {
             status: String::from("listo"),
             scans: 0,
             view: View::Summary,
+            window: TimeWin::All,
             churn_rows: Vec::new(),
+            hotspot_rows: Vec::new(),
+            locs: HashMap::new(),
             history: None,
             rx: None,
             scanning: false,
@@ -102,7 +136,20 @@ impl App {
                     gadv::engine::ScanSource::Delta(_) => "delta",
                     gadv::engine::ScanSource::Full => "full",
                 };
-                (outcome.history, label, t0.elapsed().as_millis())
+                // F4: LOC solo de los candidatos a hotspot (top-500 por churn).
+                let history = outcome.history;
+                let candidates: Vec<(FileId, &str)> = churn(&history, Window::ALL)
+                    .into_iter()
+                    .take(500)
+                    .filter_map(|r| {
+                        history
+                            .paths
+                            .get(r.file.0 as usize)
+                            .map(|p| (r.file, p.as_str()))
+                    })
+                    .collect();
+                let locs = head_locs(&path, &candidates).unwrap_or_default();
+                (history, locs, label, t0.elapsed().as_millis())
             });
             let _ = tx.send(result.map_err(|e| e.to_string()));
         });
@@ -112,14 +159,15 @@ impl App {
     fn drain_scan(&mut self) {
         let Some(rx) = &self.rx else { return };
         match rx.try_recv() {
-            Ok(Ok((history, label, ms))) => {
-                self.apply_history(history, label, ms);
+            Ok(Ok((history, locs, label, ms))) => {
+                self.apply_history(history, locs, label, ms);
                 self.scanning = false;
                 self.rx = None;
             }
             Ok(Err(err)) => {
                 self.commits = err;
                 self.churn_rows.clear();
+                self.hotspot_rows.clear();
                 self.history = None;
                 self.scanning = false;
                 self.rx = None;
@@ -133,24 +181,56 @@ impl App {
         }
     }
 
-    fn apply_history(&mut self, history: History, label: &'static str, ms: u128) {
-        let rows = churn(&history, Window::ALL);
-        self.churn_rows = rows
-            .into_iter()
-            .take(20)
-            .map(|r| {
-                let path = history
-                    .paths
-                    .get(r.file.0 as usize)
-                    .cloned()
-                    .unwrap_or_else(|| format!("#{}", r.file.0));
-                (path, r.churn(), r.touches)
-            })
-            .collect();
+    fn apply_history(&mut self, history: History, locs: HashMap<FileId, u32>, label: &'static str, ms: u128) {
         self.commits = format!("{} commits en {ms} ms ({label})", history.commits.len());
         self.history = Some(history);
+        self.locs = locs;
+        self.recompute();
         self.scans += 1;
         self.status = format!("refrescado ×{}", self.scans);
+    }
+
+    /// Recalcula las filas de ambas vistas para la ventana actual.
+    /// Puro y barato: la ventana filtra la caché, no re-ingesta (F4).
+    fn recompute(&mut self) {
+        let Some(history) = &self.history else { return };
+        let window = match self.window {
+            TimeWin::All => Window::ALL,
+            days => {
+                let now = history.commits.iter().map(|c| c.time).max().unwrap_or(0);
+                let d = if days == TimeWin::D30 { 30 } else { 90 };
+                Window {
+                    from: Some(now - d * 86_400),
+                }
+            }
+        };
+        let path_of = |file: gadv::engine::FileId| {
+            history
+                .paths
+                .get(file.0 as usize)
+                .cloned()
+                .unwrap_or_else(|| format!("#{}", file.0))
+        };
+
+        let churn_rows: Vec<(String, u32, u32)> = churn(history, window)
+            .into_iter()
+            .take(20)
+            .map(|r| (path_of(r.file), r.churn(), r.touches))
+            .collect();
+        let locs = &self.locs;
+        let hotspot_rows: Vec<(String, u32, u32, f32)> = hotspots(
+            history,
+            window,
+            &|f| locs.get(&f).copied().unwrap_or(0),
+            &|p| is_ignored(p, &[]),
+            20,
+        )
+        .into_iter()
+        .map(|r| (path_of(r.file), r.churn, r.loc, r.score))
+        .collect();
+
+        self.churn_rows = churn_rows;
+        self.hotspot_rows = hotspot_rows;
     }
 }
 
@@ -219,7 +299,7 @@ fn event_loop(
                     return Ok(());
                 }
                 KeyCode::Esc => match app.view {
-                    View::Churn => app.view = View::Summary,
+                    View::Churn | View::Hotspot => app.view = View::Summary,
                     View::Summary => return Ok(()),
                 },
                 KeyCode::Char('1') => app.view = View::Summary,
@@ -227,6 +307,15 @@ fn event_loop(
                     if app.history.is_some() {
                         app.view = View::Churn;
                     }
+                }
+                KeyCode::Char('3') => {
+                    if app.history.is_some() {
+                        app.view = View::Hotspot;
+                    }
+                }
+                KeyCode::Char('t') => {
+                    app.window = app.window.next();
+                    app.recompute();
                 }
                 KeyCode::Char('r') => app.refresh(),
                 _ => {}
@@ -242,6 +331,7 @@ fn draw(f: &mut Frame, app: &App) {
     match app.view {
         View::Summary => draw_summary(f, app, area),
         View::Churn => draw_churn(f, app, area),
+        View::Hotspot => draw_hotspot(f, app, area),
     }
 }
 
@@ -302,7 +392,7 @@ fn draw_summary(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "1 resumen · 2 churn · r refrescar · q/Esc salir",
+            "1 resumen · 2 churn · 3 hotspots · t ventana · r refrescar · q/Esc salir",
             Style::default().fg(t.dimmed),
         )),
         Line::from(Span::styled(app.status.clone(), Style::default().fg(t.warning))),
@@ -354,6 +444,95 @@ fn draw_churn(f: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::from(Span::styled(
         " Esc volver ",
+        Style::default().fg(t.dimmed),
+    )));
+
+    let inner = Rect {
+        x: outer.x + 2,
+        y: outer.y + 1,
+        width: outer.width.saturating_sub(4),
+        height: outer.height.saturating_sub(2),
+    };
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(t.background).fg(t.foreground)),
+        inner,
+    );
+}
+
+/// Scatter churn×LOC dibujado a mano (grid de celdas) + ranking top.
+/// x = log2(LOC) para que el eje no lo domine un archivo de 50k líneas;
+/// y = churn. Celda con N puntos muestra el de mayor score.
+fn draw_hotspot(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let outer = centered(area, 48, 110, 12, 30);
+    draw_solid_border(f, outer, t);
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+        format!(
+            " hotspots — churn × LOC (proxy) · ventana: {} ",
+            app.window.label()
+        ),
+        Style::default().fg(t.dimmed),
+    ))];
+
+    if app.hotspot_rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " sin candidatos: r para escanear ",
+            Style::default().fg(t.warning),
+        )));
+    } else {
+        // --- scatter grid ---
+        let gw = 44usize;
+        let gh = 10usize;
+        let max_churn = app.hotspot_rows.iter().map(|(_, c, _, _)| *c).max().unwrap_or(1).max(1) as f32;
+        let max_log = app
+            .hotspot_rows
+            .iter()
+            .fold(1.0f32, |m, (_, _, l, _)| (m).max((*l as f32).log2()))
+            .max(1.0);
+        // celda -> índice del punto con mayor score en ella
+        let mut grid: Vec<Vec<Option<usize>>> = vec![vec![None; gw]; gh];
+        for (i, (_, c, l, _)) in app.hotspot_rows.iter().enumerate() {
+            let x = (((*l as f32).log2() / max_log) * (gw - 1) as f32) as usize;
+            let y = (( *c as f32 / max_churn) * (gh - 1) as f32) as usize;
+            let cell = &mut grid[gh - 1 - y][x];
+            if cell.is_none_or(|j| app.hotspot_rows[j].3 < app.hotspot_rows[i].3) {
+                *cell = Some(i);
+            }
+        }
+        for row in grid.iter() {
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(gw);
+            for cell in row {
+                match cell {
+                    Some(i) => {
+                        let color = if *i < 3 { t.warning } else { t.accent };
+                        spans.push(Span::styled("●", Style::default().fg(color)));
+                    }
+                    None => spans.push(Span::styled("·", Style::default().fg(t.border))),
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(
+                " x: LOC 8→{} · y: churn 0→{} (los 3 rojos = mayor score) ",
+                2u64.pow(max_log as u32),
+                max_churn as u32
+            ),
+            Style::default().fg(t.dimmed),
+        )));
+        lines.push(Line::from(""));
+        // --- ranking top-8 ---
+        for (path, c, l, s) in app.hotspot_rows.iter().take(8) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{s:.2} "), Style::default().fg(t.warning)),
+                Span::styled(format!("churn {c:<6} loc {l:<6} "), Style::default().fg(t.foreground)),
+                Span::styled(truncate(path, 40), Style::default().fg(t.primary)),
+            ]));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        " t ventana · Esc volver ",
         Style::default().fg(t.dimmed),
     )));
 

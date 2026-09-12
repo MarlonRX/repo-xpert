@@ -14,9 +14,11 @@ pub mod model;
 
 pub use cache::{CacheOutcome, ScanSource, scan_with_cache};
 pub use error::EngineError;
+pub use git::blob::head_locs;
 pub use git::walk::scan_history;
 pub use metrics::Window;
 pub use metrics::churn::{ChurnRow, churn};
+pub use metrics::hotspots::{HotspotRow, hotspots, is_ignored};
 pub use model::{AuthorId, AuthorInfo, CommitRecord, FileId, FileStat, History, Oid};
 
 use std::path::Path;
