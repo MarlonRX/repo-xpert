@@ -32,7 +32,7 @@ impl Default for Config {
         Self {
             language: "es".into(),
             nerd_font: false,
-            theme: "Tokyo Night".into(),
+            theme: "Advance Ink".into(),
             max_commits: default_max_commits(),
             ignores: Vec::new(),
             no_cache: false,

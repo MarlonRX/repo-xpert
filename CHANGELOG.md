@@ -1,5 +1,29 @@
 # Changelog
 
+## Visual rework — legibilidad + paleta "Advance Ink" (2026-09-12)
+
+- **Tema propio por defecto**: "Advance Ink" (ámbar sobre tinta profunda,
+  coral = riesgo, verde-azulado = salud/datos). Los 10 temas del fork siguen.
+- **Layout a pantalla completa**: cabecera (repo · HEAD · ventana), barra de
+  pestañas `[1 Resumen][2 Churn][3 Hotspots][4 Dueño]`, contenido, pie con
+  teclas + ms/fuente del último scan. Antes: una tarjetita centrada.
+- **Resumen como dashboard**: KPIs grandes (commits/autores/merges), mayor
+  churn, hotspot #1 y riesgo de bus factor en una línea; mini-top-5 churn.
+- **Tablas legibles**: encabezados de columna, `#` de ranking, números con
+  separador de miles (`4,080`), fila seleccionada resaltada con `▸`,
+  barras `▍` consistentes, ↑/↓ además de j/k.
+- **Hotspots**: scatter más grande con ejes rotulados ("churn alto/bajo",
+  "LOC: 8 → N (escala log)"), top-6 con columnas score/churn/LOC.
+- **Dueño**: línea de riesgo grande ("N de M con un solo dueño" en coral),
+  tabla con share y líneas-que-nadie-más-conoce rotuladas.
+- **Vecinos**: título con el archivo origen + explicación de la escala
+  ("1.00 = siempre juntos").
+- Estados vacíos y de escaneo con mensajes claros ("escaneando… los repos
+  grandes tardan unos segundos"), aviso de terminal muy chica (<48×12).
+- Engine intacto: el rework es 100 % capa `ui/` + `theme.rs` + default config.
+
+## F6 — coupling + rayon + cierre (2026-09-12)
+
 Formato de versiones: hitos del plan (`docs/plan/ROADMAP.md`).
 
 ## F6 — coupling + rayon + cierre (2026-09-12)

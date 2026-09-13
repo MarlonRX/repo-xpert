@@ -24,6 +24,23 @@ pub struct Theme {
 
 pub fn get_themes() -> Vec<Theme> {
     vec![
+        // El tema de la entidad: ámbar sobre tinta profunda. Lectura de
+        // "escena del crimen" de código: fondo oscuro de bajo contraste,
+        // datos en ámbar, riesgo en coral, salud en verde azulado.
+        Theme {
+            name: "Advance Ink",
+            background: Color::Rgb(0x0A, 0x0E, 0x1B),
+            foreground: Color::Rgb(0xE8, 0xEC, 0xF4),
+            primary: Color::Rgb(0xF2, 0xA9, 0x3B),
+            border: Color::Rgb(0x1E, 0x28, 0x42),
+            accent: Color::Rgb(0x6E, 0xD3, 0xC9),
+            warning: Color::Rgb(0xFF, 0x6B, 0x5E),
+            success: Color::Rgb(0x5C, 0xD4, 0x8C),
+            dimmed: Color::Rgb(0x5A, 0x67, 0x84),
+            highlight: Color::Rgb(0xFF, 0xD1, 0x66),
+            surface: Color::Rgb(0x11, 0x18, 0x2C),
+            on_highlight: Color::Rgb(0x0A, 0x0E, 0x1B),
+        },
         Theme {
             name: "Catppuccin Mocha",
             background: Color::Rgb(0x1E, 0x1E, 0x2E),
@@ -174,7 +191,7 @@ pub fn get_theme_by_name(name: &str) -> Theme {
             return *t;
         }
     }
-    themes[1] // Tokyo Night default
+    themes[0] // Advance Ink default
 }
 
 #[cfg(test)]
@@ -204,9 +221,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_name_returns_tokyo_night() {
+    fn unknown_name_returns_default_theme() {
         let t = get_theme_by_name("BogusThemeXYZ");
-        assert_eq!(t.name, "Tokyo Night");
+        assert_eq!(t.name, "Advance Ink");
     }
 
     #[test]
