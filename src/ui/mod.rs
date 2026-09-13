@@ -459,7 +459,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let line = Line::from(vec![
         Span::styled(
-            " git-advance ",
+            " repo-xpert ",
             Style::default()
                 .fg(t.on_highlight)
                 .bg(t.primary)
@@ -562,7 +562,7 @@ fn draw_summary(f: &mut Frame, app: &App, area: Rect) {
         let mut lines = empty_state(msg, t);
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            " git-advance analiza tu repo localmente: que cambia, quien lo conoce, donde duele.",
+            " repo-xpert analiza tu repo localmente: que cambia, quien lo conoce, donde duele.",
             Style::default().fg(t.dimmed),
         )));
         f.render_widget(Paragraph::new(lines).style(Style::default().bg(t.background)), area);

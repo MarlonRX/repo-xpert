@@ -65,7 +65,7 @@ fn no_cache_never_writes() {
     let dir = make_fixture("cache-off");
     scan_with_cache(&dir, MAX, false).expect("scan sin cache");
     assert!(
-        !dir.join(".git/git-advance/cache.json").exists(),
+        !dir.join(".git/repo-xpert/cache.json").exists(),
         "--no-cache no debe dejar rastro"
     );
     let _ = fs::remove_dir_all(&dir);
@@ -75,7 +75,7 @@ fn no_cache_never_writes() {
 fn corrupt_cache_degrades_to_full() {
     let dir = make_fixture("cache-corrupt");
     scan_with_cache(&dir, MAX, true).expect("scan 1");
-    fs::write(dir.join(".git/git-advance/cache.json"), "{basura").unwrap();
+    fs::write(dir.join(".git/repo-xpert/cache.json"), "{basura").unwrap();
     let r = scan_with_cache(&dir, MAX, true).expect("scan tras corrupcion");
     assert!(matches!(r.source, ScanSource::Full));
     assert_eq!(r.history.commits.len(), 10);

@@ -1,5 +1,5 @@
 // ── Caché de historial (DECISIONS §3c) ───────────────────────────────
-// JSON endurecido v1 en `<repo>/.git/git-advance/cache.json`:
+// JSON endurecido v1 en `<repo>/.git/repo-xpert/cache.json`:
 //  1. envelope con format_version; mismatch → rebuild (nunca migrar)
 //  2. oids hex en disco
 //  3. interning también en disco: records usan u32 sobre tablas
@@ -131,9 +131,9 @@ pub fn scan_with_cache(
     })
 }
 
-/// `<git_dir>/git-advance/cache.json` (dentro de .git: automático por repo).
+/// `<git_dir>/repo-xpert/cache.json` (dentro de .git: automático por repo).
 fn cache_path(git_dir: &Path) -> PathBuf {
-    git_dir.join("git-advance").join("cache.json")
+    git_dir.join("repo-xpert").join("cache.json")
 }
 
 fn read_cache(path: &Path) -> Option<CacheFile> {
