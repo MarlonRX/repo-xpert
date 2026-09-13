@@ -132,5 +132,23 @@ fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool, no_c
             .unwrap_or("?");
         println!("  {:.2}  churn {:>6}  loc {:>6}  {path}", h.score, h.churn, h.loc);
     }
+
+    // F5: riesgo de conocimiento (bus factor 1) como resumen de una línea.
+    let own = engine::ownership(history, engine::Window::ALL);
+    let (bf1, total) = engine::repo_risk(&own, 50);
+    println!("ownership: {bf1} de {total} modulos con bus factor 1 (>=50 lineas kept)");
+    for r in own.iter().filter(|r| r.bus_factor == 1).take(5) {
+        let path = history
+            .paths
+            .get(r.file.0 as usize)
+            .map(String::as_str)
+            .unwrap_or("?");
+        let owner = r
+            .owner
+            .and_then(|a| history.authors.get(a.0 as usize))
+            .map(|a| a.name.as_str())
+            .unwrap_or("?");
+        println!("  bf 1  {:>6} kept  {owner:<12} {path}", r.kept_total);
+    }
     Ok(())
 }

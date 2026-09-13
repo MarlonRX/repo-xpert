@@ -2,6 +2,26 @@
 
 Formato de versiones: hitos del plan (`docs/plan/ROADMAP.md`).
 
+## F5 — ownership + bus factor (2026-09-12)
+
+- `engine/metrics/ownership.rs` (ALGORITHMS §3): kept[a,f] = adds[a] −
+  dels[otros→f] (los borrados PROPIOS no descuentan: refactor ≠ destrucción);
+  bus factor = autores necesarios para cubrir >50% (cota estricta: un 50/50
+  devuelve 2, un 70/30 devuelve 1). 5 tests unitarios.
+- **Sin bump de `format_version`:** el plan (5.1) pedía extender el esquema
+  con mapas por autor, pero cada `FileStat` ya vive en un record con autor
+  único → la métrica sale gratis del barrido existente.
+- UI vista `4`: top-30 por riesgo (bf 1 primero), barra de share, agregado
+  "N de M módulos con bus factor 1" en rojo. Etiquetado "heurística por
+  commits (no blame)" visible.
+- CLI `scan`: resumen de riesgo + top-5 bf 1.
+
+### Verificación
+
+Unit: solo-autor→1, 70/30→1, 50/50→2, borrado-total→0 (muerto). En el bench
+(archivos de 1 línea reescritos rotativamente) el resultado honesto es
+"0 módulos con dueño ≥50 líneas": nadie conserva trabajo ahí.
+
 ## F4 — hotspots + scatter + ventanas (2026-09-12)
 
 - `engine/git/blob.rs`: LOC en HEAD (resolución de ruta en tree; borrado o

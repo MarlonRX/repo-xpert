@@ -24,7 +24,9 @@ use ratatui::{
 };
 
 use gadv::config::{self, Config};
-use gadv::engine::{self, FileId, History, Window, churn, head_locs, hotspots, is_ignored};
+use gadv::engine::{
+    self, FileId, History, Window, churn, head_locs, hotspots, is_ignored, ownership, repo_risk,
+};
 use gadv::log;
 use gadv::theme::{self, Theme};
 use gadv::version;
@@ -36,6 +38,7 @@ pub enum View {
     Summary,
     Churn,
     Hotspot,
+    Ownership,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +81,10 @@ pub struct App {
     pub churn_rows: Vec<(String, u32, u32)>,
     /// (path, churn, loc, score) top-20, para la vista Hotspot.
     pub hotspot_rows: Vec<(String, u32, u32, f32)>,
+    /// (path, owner, share, bus_factor, kept) top-30 por riesgo, vista Ownership.
+    pub ownership_rows: Vec<(String, String, f32, usize, u32)>,
+    /// (módulos con bus factor 1, módulos con dueño) sobre los top por tamaño.
+    pub repo_risk: (usize, usize),
     locs: HashMap<FileId, u32>,
     history: Option<History>,
     /// Worker de escaneo (F3): la UI nunca bloquea por el motor.
@@ -103,6 +110,8 @@ impl App {
             window: TimeWin::All,
             churn_rows: Vec::new(),
             hotspot_rows: Vec::new(),
+            ownership_rows: Vec::new(),
+            repo_risk: (0, 0),
             locs: HashMap::new(),
             history: None,
             rx: None,
@@ -229,8 +238,26 @@ impl App {
         .map(|r| (path_of(r.file), r.churn, r.loc, r.score))
         .collect();
 
+        let own = ownership(history, window);
+        let (bf1, total) = repo_risk(&own, 50);
+        let ownership_rows: Vec<(String, String, f32, usize, u32)> = own
+            .iter()
+            .take(30)
+            .filter(|r| r.bus_factor > 0)
+            .map(|r| {
+                let owner = r
+                    .owner
+                    .and_then(|a| history.authors.get(a.0 as usize))
+                    .map(|a| a.name.clone())
+                    .unwrap_or_else(|| "?".to_string());
+                (path_of(r.file), owner, r.owner_share, r.bus_factor, r.kept_total)
+            })
+            .collect();
+
         self.churn_rows = churn_rows;
         self.hotspot_rows = hotspot_rows;
+        self.ownership_rows = ownership_rows;
+        self.repo_risk = (bf1, total);
     }
 }
 
@@ -299,7 +326,7 @@ fn event_loop(
                     return Ok(());
                 }
                 KeyCode::Esc => match app.view {
-                    View::Churn | View::Hotspot => app.view = View::Summary,
+                    View::Churn | View::Hotspot | View::Ownership => app.view = View::Summary,
                     View::Summary => return Ok(()),
                 },
                 KeyCode::Char('1') => app.view = View::Summary,
@@ -311,6 +338,11 @@ fn event_loop(
                 KeyCode::Char('3') => {
                     if app.history.is_some() {
                         app.view = View::Hotspot;
+                    }
+                }
+                KeyCode::Char('4') => {
+                    if app.history.is_some() {
+                        app.view = View::Ownership;
                     }
                 }
                 KeyCode::Char('t') => {
@@ -332,6 +364,7 @@ fn draw(f: &mut Frame, app: &App) {
         View::Summary => draw_summary(f, app, area),
         View::Churn => draw_churn(f, app, area),
         View::Hotspot => draw_hotspot(f, app, area),
+        View::Ownership => draw_ownership(f, app, area),
     }
 }
 
@@ -392,7 +425,7 @@ fn draw_summary(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "1 resumen · 2 churn · 3 hotspots · t ventana · r refrescar · q/Esc salir",
+            "1 resumen · 2 churn · 3 hotspots · 4 ownership · t ventana · r refrescar · q/Esc salir",
             Style::default().fg(t.dimmed),
         )),
         Line::from(Span::styled(app.status.clone(), Style::default().fg(t.warning))),
@@ -444,6 +477,60 @@ fn draw_churn(f: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::from(Span::styled(
         " Esc volver ",
+        Style::default().fg(t.dimmed),
+    )));
+
+    let inner = Rect {
+        x: outer.x + 2,
+        y: outer.y + 1,
+        width: outer.width.saturating_sub(4),
+        height: outer.height.saturating_sub(2),
+    };
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(t.background).fg(t.foreground)),
+        inner,
+    );
+}
+
+/// Ownership por riesgo: bus factor 1 primero. El agregado del repo arriba.
+fn draw_ownership(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let outer = centered(area, 48, 100, 12, 30);
+    draw_solid_border(f, outer, t);
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+        format!(" ownership — heurística por commits (no blame) · ventana: {} ", app.window.label()),
+        Style::default().fg(t.dimmed),
+    ))];
+    let (bf1, total) = app.repo_risk;
+    let risk_color = if bf1 > 0 { t.warning } else { t.success };
+    lines.push(Line::from(Span::styled(
+        format!(" módulos con bus factor 1: {bf1} de {total} "),
+        Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
+    )));
+
+    if app.ownership_rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " sin datos: r para escanear ",
+            Style::default().fg(t.dimmed),
+        )));
+    } else {
+        for (path, owner, share, bf, kept) in &app.ownership_rows {
+            let bar_w = 10usize;
+            let filled = ((*share * bar_w as f32) as usize).clamp(1, bar_w);
+            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_w - filled));
+            let bf_color = if *bf <= 1 { t.warning } else { t.success };
+            lines.push(Line::from(vec![
+                Span::styled(format!("bf {bf} "), Style::default().fg(bf_color)),
+                Span::styled(format!("{bar} "), Style::default().fg(t.primary)),
+                Span::styled(format!("{:<14} ", truncate(owner, 14)), Style::default().fg(t.foreground)),
+                Span::styled(format!("{kept:>6}  "), Style::default().fg(t.accent)),
+                Span::styled(truncate(path, 38), Style::default().fg(t.dimmed)),
+            ]));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        " t ventana · Esc volver ",
         Style::default().fg(t.dimmed),
     )));
 

@@ -4,6 +4,7 @@
 
 pub mod churn;
 pub mod hotspots;
+pub mod ownership;
 
 /// Ventana temporal: `from` es epoch seconds; `None` = todo el historial.
 /// Las ventanas se aplican como filtro sobre la caché, nunca re-ingesta.
