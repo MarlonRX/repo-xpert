@@ -25,7 +25,8 @@ use ratatui::{
 
 use gadv::config::{self, Config};
 use gadv::engine::{
-    self, FileId, History, Window, churn, head_locs, hotspots, is_ignored, ownership, repo_risk,
+    self, FileId, History, Window, churn, coupling, head_locs, hotspots, is_ignored, neighbors,
+    ownership, repo_risk,
 };
 use gadv::log;
 use gadv::theme::{self, Theme};
@@ -39,6 +40,7 @@ pub enum View {
     Churn,
     Hotspot,
     Ownership,
+    Coupling,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,14 +79,21 @@ pub struct App {
     pub scans: u32,
     pub view: View,
     pub window: TimeWin,
+    /// Cursor j/k sobre la lista de la vista activa (churn/hotspot/ownership).
+    pub cursor: usize,
     /// (path, churn, touches) top-20 ya ordenado, listo para pintar.
-    pub churn_rows: Vec<(String, u32, u32)>,
+    pub churn_rows: Vec<(FileId, String, u32, u32)>,
     /// (path, churn, loc, score) top-20, para la vista Hotspot.
-    pub hotspot_rows: Vec<(String, u32, u32, f32)>,
+    pub hotspot_rows: Vec<(FileId, String, u32, u32, f32)>,
     /// (path, owner, share, bus_factor, kept) top-30 por riesgo, vista Ownership.
-    pub ownership_rows: Vec<(String, String, f32, usize, u32)>,
+    pub ownership_rows: Vec<(FileId, String, String, f32, usize, u32)>,
     /// (módulos con bus factor 1, módulos con dueño) sobre los top por tamaño.
     pub repo_risk: (usize, usize),
+    /// Aristas de co-modificación de la ventana actual (F6).
+    coupling_edges: Vec<gadv::engine::CouplingEdge>,
+    /// (path, jaccard, cooc) del archivo abierto con Enter.
+    pub coupling_rows: Vec<(String, f32, u32)>,
+    pub coupling_title: String,
     locs: HashMap<FileId, u32>,
     history: Option<History>,
     /// Worker de escaneo (F3): la UI nunca bloquea por el motor.
@@ -108,10 +117,14 @@ impl App {
             scans: 0,
             view: View::Summary,
             window: TimeWin::All,
+            cursor: 0,
             churn_rows: Vec::new(),
             hotspot_rows: Vec::new(),
             ownership_rows: Vec::new(),
             repo_risk: (0, 0),
+            coupling_edges: Vec::new(),
+            coupling_rows: Vec::new(),
+            coupling_title: String::new(),
             locs: HashMap::new(),
             history: None,
             rx: None,
@@ -177,6 +190,7 @@ impl App {
                 self.commits = err;
                 self.churn_rows.clear();
                 self.hotspot_rows.clear();
+                self.ownership_rows.clear();
                 self.history = None;
                 self.scanning = false;
                 self.rx = None;
@@ -221,13 +235,13 @@ impl App {
                 .unwrap_or_else(|| format!("#{}", file.0))
         };
 
-        let churn_rows: Vec<(String, u32, u32)> = churn(history, window)
+        let churn_rows: Vec<(FileId, String, u32, u32)> = churn(history, window)
             .into_iter()
             .take(20)
-            .map(|r| (path_of(r.file), r.churn(), r.touches))
+            .map(|r| (r.file, path_of(r.file), r.churn(), r.touches))
             .collect();
         let locs = &self.locs;
-        let hotspot_rows: Vec<(String, u32, u32, f32)> = hotspots(
+        let hotspot_rows: Vec<(FileId, String, u32, u32, f32)> = hotspots(
             history,
             window,
             &|f| locs.get(&f).copied().unwrap_or(0),
@@ -235,12 +249,12 @@ impl App {
             20,
         )
         .into_iter()
-        .map(|r| (path_of(r.file), r.churn, r.loc, r.score))
+        .map(|r| (r.file, path_of(r.file), r.churn, r.loc, r.score))
         .collect();
 
         let own = ownership(history, window);
         let (bf1, total) = repo_risk(&own, 50);
-        let ownership_rows: Vec<(String, String, f32, usize, u32)> = own
+        let ownership_rows: Vec<(FileId, String, String, f32, usize, u32)> = own
             .iter()
             .take(30)
             .filter(|r| r.bus_factor > 0)
@@ -250,14 +264,48 @@ impl App {
                     .and_then(|a| history.authors.get(a.0 as usize))
                     .map(|a| a.name.clone())
                     .unwrap_or_else(|| "?".to_string());
-                (path_of(r.file), owner, r.owner_share, r.bus_factor, r.kept_total)
+                (r.file, path_of(r.file), owner, r.owner_share, r.bus_factor, r.kept_total)
             })
             .collect();
+        let coupling_edges = coupling(history, window, &|p| is_ignored(p, &[]));
 
         self.churn_rows = churn_rows;
         self.hotspot_rows = hotspot_rows;
         self.ownership_rows = ownership_rows;
         self.repo_risk = (bf1, total);
+        self.coupling_edges = coupling_edges;
+        self.cursor = 0;
+    }
+
+    /// Enter en una lista: abre los vecinos de co-modificación del archivo.
+    fn open_coupling(&mut self) {
+        let file = match self.view {
+            View::Churn => self.churn_rows.get(self.cursor).map(|r| r.0),
+            View::Hotspot => self.hotspot_rows.get(self.cursor).map(|r| r.0),
+            View::Ownership => self.ownership_rows.get(self.cursor).map(|r| r.0),
+            _ => None,
+        };
+        let Some(file) = file else { return };
+        let title = match self.view {
+            View::Churn => self.churn_rows[self.cursor].1.clone(),
+            View::Hotspot => self.hotspot_rows[self.cursor].1.clone(),
+            View::Ownership => self.ownership_rows[self.cursor].1.clone(),
+            _ => return,
+        };
+        let rows: Vec<(String, f32, u32)> = neighbors(&self.coupling_edges, file, 5)
+            .into_iter()
+            .map(|(f, j, c)| {
+                let path = self
+                    .history
+                    .as_ref()
+                    .and_then(|h| h.paths.get(f.0 as usize).cloned())
+                    .unwrap_or_else(|| format!("#{}", f.0));
+                (path, j, c)
+            })
+            .collect();
+        self.coupling_rows = rows;
+        self.coupling_title = title;
+        self.view = View::Coupling;
     }
 }
 
@@ -326,9 +374,29 @@ fn event_loop(
                     return Ok(());
                 }
                 KeyCode::Esc => match app.view {
+                    View::Coupling => {
+                        app.view = View::Churn;
+                    }
                     View::Churn | View::Hotspot | View::Ownership => app.view = View::Summary,
                     View::Summary => return Ok(()),
                 },
+                KeyCode::Char('j') => {
+                    let n = match app.view {
+                        View::Churn => app.churn_rows.len(),
+                        View::Hotspot => app.hotspot_rows.len(),
+                        View::Ownership => app.ownership_rows.len(),
+                        _ => 0,
+                    };
+                    if n > 0 {
+                        app.cursor = (app.cursor + 1).min(n - 1);
+                    }
+                }
+                KeyCode::Char('k') => {
+                    if matches!(app.view, View::Churn | View::Hotspot | View::Ownership) {
+                        app.cursor = app.cursor.saturating_sub(1);
+                    }
+                }
+                KeyCode::Enter => app.open_coupling(),
                 KeyCode::Char('1') => app.view = View::Summary,
                 KeyCode::Char('2') => {
                     if app.history.is_some() {
@@ -365,6 +433,7 @@ fn draw(f: &mut Frame, app: &App) {
         View::Churn => draw_churn(f, app, area),
         View::Hotspot => draw_hotspot(f, app, area),
         View::Ownership => draw_ownership(f, app, area),
+        View::Coupling => draw_coupling(f, app, area),
     }
 }
 
@@ -459,15 +528,17 @@ fn draw_churn(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(t.warning),
         )));
     } else {
-        let max = app.churn_rows.iter().map(|(_, c, _)| *c).max().unwrap_or(1).max(1);
+        let max = app.churn_rows.iter().map(|(_, _, c, _)| *c).max().unwrap_or(1).max(1);
         let inner_w = outer.width.saturating_sub(4) as usize;
-        // layout: [path 38][bar hasta 24][número]
-        let path_w = 38.min(inner_w.saturating_sub(10));
-        let bar_w = inner_w.saturating_sub(path_w + 8).clamp(4, 24);
-        for (path, c, touches) in &app.churn_rows {
+        // layout: [cursor 2][path 38][bar hasta 24][número]
+        let path_w = 38.min(inner_w.saturating_sub(12));
+        let bar_w = inner_w.saturating_sub(path_w + 10).clamp(4, 24);
+        for (i, (_, path, c, touches)) in app.churn_rows.iter().enumerate() {
             let filled = ((*c as f32 / max as f32) * bar_w as f32).ceil() as usize;
             let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_w - filled));
+            let cur = if i == app.cursor { "▸" } else { " " };
             lines.push(Line::from(vec![
+                Span::styled(cur.to_string(), Style::default().fg(t.accent)),
                 Span::styled(format!("{:<path_w$}", truncate(path, path_w)), Style::default().fg(t.foreground)),
                 Span::styled(format!(" {bar} "), Style::default().fg(t.primary)),
                 Span::styled(format!("{c:>5}"), Style::default().fg(t.accent)),
@@ -476,7 +547,7 @@ fn draw_churn(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     lines.push(Line::from(Span::styled(
-        " Esc volver ",
+        " j/k mover · Enter vecinos · Esc volver ",
         Style::default().fg(t.dimmed),
     )));
 
@@ -515,12 +586,14 @@ fn draw_ownership(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(t.dimmed),
         )));
     } else {
-        for (path, owner, share, bf, kept) in &app.ownership_rows {
+        for (i, (_, path, owner, share, bf, kept)) in app.ownership_rows.iter().enumerate() {
             let bar_w = 10usize;
             let filled = ((*share * bar_w as f32) as usize).clamp(1, bar_w);
             let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_w - filled));
             let bf_color = if *bf <= 1 { t.warning } else { t.success };
+            let cur = if i == app.cursor { "▸" } else { " " };
             lines.push(Line::from(vec![
+                Span::styled(cur.to_string(), Style::default().fg(t.accent)),
                 Span::styled(format!("bf {bf} "), Style::default().fg(bf_color)),
                 Span::styled(format!("{bar} "), Style::default().fg(t.primary)),
                 Span::styled(format!("{:<14} ", truncate(owner, 14)), Style::default().fg(t.foreground)),
@@ -530,7 +603,7 @@ fn draw_ownership(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     lines.push(Line::from(Span::styled(
-        " t ventana · Esc volver ",
+        " j/k mover · Enter vecinos · t ventana · Esc volver ",
         Style::default().fg(t.dimmed),
     )));
 
@@ -571,19 +644,19 @@ fn draw_hotspot(f: &mut Frame, app: &App, area: Rect) {
         // --- scatter grid ---
         let gw = 44usize;
         let gh = 10usize;
-        let max_churn = app.hotspot_rows.iter().map(|(_, c, _, _)| *c).max().unwrap_or(1).max(1) as f32;
+        let max_churn = app.hotspot_rows.iter().map(|(_, _, c, _, _)| *c).max().unwrap_or(1).max(1) as f32;
         let max_log = app
             .hotspot_rows
             .iter()
-            .fold(1.0f32, |m, (_, _, l, _)| (m).max((*l as f32).log2()))
+            .fold(1.0f32, |m, (_, _, _, l, _)| (m).max((*l as f32).log2()))
             .max(1.0);
         // celda -> índice del punto con mayor score en ella
         let mut grid: Vec<Vec<Option<usize>>> = vec![vec![None; gw]; gh];
-        for (i, (_, c, l, _)) in app.hotspot_rows.iter().enumerate() {
+        for (i, (_, _, c, l, _)) in app.hotspot_rows.iter().enumerate() {
             let x = (((*l as f32).log2() / max_log) * (gw - 1) as f32) as usize;
             let y = (( *c as f32 / max_churn) * (gh - 1) as f32) as usize;
             let cell = &mut grid[gh - 1 - y][x];
-            if cell.is_none_or(|j| app.hotspot_rows[j].3 < app.hotspot_rows[i].3) {
+            if cell.is_none_or(|j| app.hotspot_rows[j].4 < app.hotspot_rows[i].4) {
                 *cell = Some(i);
             }
         }
@@ -610,7 +683,7 @@ fn draw_hotspot(f: &mut Frame, app: &App, area: Rect) {
         )));
         lines.push(Line::from(""));
         // --- ranking top-8 ---
-        for (path, c, l, s) in app.hotspot_rows.iter().take(8) {
+        for (_, path, c, l, s) in app.hotspot_rows.iter().take(8) {
             lines.push(Line::from(vec![
                 Span::styled(format!("{s:.2} "), Style::default().fg(t.warning)),
                 Span::styled(format!("churn {c:<6} loc {l:<6} "), Style::default().fg(t.foreground)),
@@ -619,10 +692,53 @@ fn draw_hotspot(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     lines.push(Line::from(Span::styled(
-        " t ventana · Esc volver ",
+        " j/k mover · Enter vecinos · t ventana · Esc volver ",
         Style::default().fg(t.dimmed),
     )));
 
+    let inner = Rect {
+        x: outer.x + 2,
+        y: outer.y + 1,
+        width: outer.width.saturating_sub(4),
+        height: outer.height.saturating_sub(2),
+    };
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(t.background).fg(t.foreground)),
+        inner,
+    );
+}
+
+/// Vecinos de co-modificación del archivo seleccionado con Enter.
+fn draw_coupling(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let outer = centered(area, 48, 100, 8, 14);
+    draw_solid_border(f, outer, t);
+    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+        format!(" cambia junto con — {} ", truncate(&app.coupling_title, 60)),
+        Style::default().fg(t.dimmed),
+    ))];
+    if app.coupling_rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " sin co-modificaciones frecuentes (min 3, Jaccard con ventana) ",
+            Style::default().fg(t.dimmed),
+        )));
+    }
+    for (path, j, cooc) in &app.coupling_rows {
+        let bar_w = 12usize;
+        let filled = ((*j * bar_w as f32) as usize).clamp(1, bar_w);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}{} ", "█".repeat(filled), "░".repeat(bar_w - filled)),
+                Style::default().fg(t.accent),
+            ),
+            Span::styled(format!("{j:.2} ×{cooc:<4} "), Style::default().fg(t.foreground)),
+            Span::styled(truncate(path, 46), Style::default().fg(t.primary)),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        " Esc volver ",
+        Style::default().fg(t.dimmed),
+    )));
     let inner = Rect {
         x: outer.x + 2,
         y: outer.y + 1,

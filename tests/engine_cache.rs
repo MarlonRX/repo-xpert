@@ -86,9 +86,9 @@ fn corrupt_cache_degrades_to_full() {
 fn v1_sample_is_the_format_contract() {
     // Congela el formato: si un cambio de modelo rompe este archivo
     // legible a mano, rompe un test (DECISIONS §3c regla 6).
-    let raw = include_str!("cache_v1_sample.json");
-    let cf: gadv::engine::cache::CacheFileTest = serde_json::from_str(raw).expect("sample v1 valido");
-    assert_eq!(cf.format_version, 1);
+    let raw = include_str!("cache_v2_sample.json");
+    let cf: gadv::engine::cache::CacheFileTest = serde_json::from_str(raw).expect("sample v2 valido");
+    assert_eq!(cf.format_version, 2);
     assert_eq!(cf.records.len(), 2);
     assert_eq!(cf.records[0].files[0].adds, 4);
     assert!(cf.records[1].files[0].binary);

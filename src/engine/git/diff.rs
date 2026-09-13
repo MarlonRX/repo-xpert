@@ -1,23 +1,24 @@
 // ── Diff por commit (gix) ────────────────────────────────────────────
-// tree(commit) vs tree(primer padre) → Vec<FileStat>.
+// tree(commit) vs tree(primer padre) → FileStats crudos (path String).
+// El internado de rutas pasa en walk (fase secuencial tras el par).
 // Políticas de ALGORITHMS §0: merges sin diff; renames imputados a la
 // ruta NUEVA; binarios = touch sin líneas.
 
 use gix::bstr::BString;
 
 use crate::engine::error::{EngineError, gix_err};
-use crate::engine::model::{FileId, FileStat, PathInterner};
 
-/// Difea un commit contra su primer padre y acumula FileStats en `out`.
-pub fn diff_commit(
+/// Un FileStat sin internar: (path, adds, dels, binary).
+pub type RawFileStat = (String, u32, u32, bool);
+
+/// Difea un commit contra su primer padre. Vacío = merge (política).
+pub fn diff_commit_raw(
     repo: &gix::Repository,
     commit: &gix::Commit<'_>,
-    interner: &mut PathInterner,
-    out: &mut Vec<FileStat>,
-) -> Result<(), EngineError> {
+) -> Result<Vec<RawFileStat>, EngineError> {
     let parents: Vec<gix::Id<'_>> = commit.parent_ids().collect();
     if parents.len() > 1 {
-        return Ok(()); // merge: sin diff (política)
+        return Ok(Vec::new()); // merge: sin diff (política)
     }
     let new_tree = commit.tree().map_err(gix_err)?;
     let old_tree = if parents.is_empty() {
@@ -32,11 +33,12 @@ pub fn diff_commit(
     };
 
     let mut opts = gix::diff::Options::default(); // ya trackea path completo
-    opts.track_rewrites(Some(gix::diff::Rewrites::default())); // renames como en `git -M`
+    opts.track_rewrites(Some(gix::diff::Rewrites::default())); // renames como `git -M`
     let changes = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(opts))
         .map_err(gix_err)?;
 
+    let mut out = Vec::new();
     use gix::object::tree::diff::ChangeDetached as C;
     for change in changes {
         match change {
@@ -49,8 +51,7 @@ pub fn diff_commit(
                 if entry_mode.is_tree() {
                     continue; // gix ya reporta los archivos anidados individualmente
                 }
-                let path = path_of(interner, &location);
-                push_blob_stat(repo, None, Some(id), path, out)?;
+                push_blob_stat(repo, None, Some(id), &location, &mut out)?;
             }
             C::Deletion {
                 location,
@@ -61,8 +62,7 @@ pub fn diff_commit(
                 if entry_mode.is_tree() {
                     continue; // ídem: las eliminaciones llegan por archivo
                 }
-                let path = path_of(interner, &location);
-                push_blob_stat(repo, Some(id), None, path, out)?;
+                push_blob_stat(repo, Some(id), None, &location, &mut out)?;
             }
             C::Modification {
                 location,
@@ -71,13 +71,14 @@ pub fn diff_commit(
                 id,
                 ..
             } => {
-                let path = path_of(interner, &location);
                 if entry_mode.is_tree() {
-                    // Cambio de blob→tree (raro): lo tratamos como reemplazo total.
-                    push_blob_stat(repo, None, Some(id), path, out)?;
-                } else {
-                    push_blob_stat(repo, Some(previous_id), Some(id), path, out)?;
+                    // Modification de un subtree: gix desciende y reporta
+                    // los archivos individuales; la ruta del directorio no
+                    // es un archivo (era el fantasma "src/ui/state").
+                    let _ = (location, previous_id, id);
+                    continue;
                 }
+                push_blob_stat(repo, Some(previous_id), Some(id), &location, &mut out)?;
             }
             C::Rewrite {
                 location,
@@ -89,29 +90,19 @@ pub fn diff_commit(
                     continue; // move de directorio: los hijos llegan individuales
                 }
                 // Rename/copy: se imputa a la ruta nueva (política F2).
-                let path = path_of(interner, &location);
                 let (adds, dels) = match diff {
                     Some(stats) => (stats.insertions, stats.removals),
                     None => (0, 0), // contenido idéntico: solo movimiento
                 };
-                out.push(FileStat {
-                    file: path,
-                    adds,
-                    dels,
-                    binary: false,
-                });
+                out.push((path_of(&location), adds, dels, false));
             }
         }
     }
-    Ok(())
+    Ok(out)
 }
 
-fn location_str(location: &BString) -> String {
+fn path_of(location: &BString) -> String {
     String::from_utf8_lossy(location).into_owned()
-}
-
-fn path_of(interner: &mut PathInterner, location: &BString) -> FileId {
-    interner.intern(&location_str(location))
 }
 
 /// Diff de un blob contra vacío/vacío contra blob (addition/deletion).
@@ -121,23 +112,22 @@ fn push_blob_stat(
     repo: &gix::Repository,
     old: Option<gix::ObjectId>,
     new: Option<gix::ObjectId>,
-    file: FileId,
-    out: &mut Vec<FileStat>,
+    location: &BString,
+    out: &mut Vec<RawFileStat>,
 ) -> Result<(), EngineError> {
     let old_bytes = old.map(|id| blob_bytes(repo, id)).transpose()?;
     let new_bytes = new.map(|id| blob_bytes(repo, id)).transpose()?;
     let non_blob = old_bytes.iter().any(|b| b.is_none()) || new_bytes.iter().any(|b| b.is_none());
-    let mut stat = line_stats(
-        file,
+    let (mut adds, mut dels, mut binary) = line_stats(
         old_bytes.as_ref().and_then(Option::as_deref),
         new_bytes.as_ref().and_then(Option::as_deref),
     );
     if non_blob {
-        stat.binary = true;
-        stat.adds = 0;
-        stat.dels = 0;
+        adds = 0;
+        dels = 0;
+        binary = true;
     }
-    out.push(stat);
+    out.push((path_of(location), adds, dels, binary));
     Ok(())
 }
 
@@ -157,26 +147,15 @@ fn looks_binary(data: &[u8]) -> bool {
 
 /// Cuenta adds/dels con el algoritmo de gix (imara + slider heuristics,
 /// mismo que usa git para numstat). Vacío = blob inexistente.
-fn line_stats(file: FileId, old: Option<&[u8]>, new: Option<&[u8]>) -> FileStat {
+fn line_stats(old: Option<&[u8]>, new: Option<&[u8]>) -> (u32, u32, bool) {
     let (old, new) = (old.unwrap_or(b""), new.unwrap_or(b""));
     if looks_binary(old) || looks_binary(new) {
-        return FileStat {
-            file,
-            adds: 0,
-            dels: 0,
-            binary: true,
-        };
+        return (0, 0, true);
     }
     let input = gix::diff::blob::InternedInput::new(old, new);
     let diff = gix::diff::blob::diff_with_slider_heuristics(
         gix::diff::blob::Algorithm::Histogram,
         &input,
     );
-    FileStat {
-        file,
-        adds: diff.count_additions() as u32,
-        dels: diff.count_removals() as u32,
-        binary: false,
-    }
+    (diff.count_additions() as u32, diff.count_removals() as u32, false)
 }
-

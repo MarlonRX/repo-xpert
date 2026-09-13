@@ -35,10 +35,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     let debug = args.iter().any(|a| a == "--debug" || a == "-d");
     let no_cache = args.iter().any(|a| a == "--no-cache");
     let scan = args.iter().any(|a| a == "scan");
+    let neighbors_idx = args.iter().position(|a| a == "--neighbors");
+    let neighbor_of = neighbors_idx.and_then(|i| args.get(i + 1)).cloned();
+    // repo_path: primer posicional que no sea flag ni valor de --neighbors.
     let repo_path = args
         .iter()
-        .find(|a| !a.starts_with('-') && a.as_str() != "scan")
-        .map(PathBuf::from)
+        .enumerate()
+        .find(|(i, a)| {
+            !a.starts_with('-')
+                && a.as_str() != "scan"
+                && neighbors_idx.is_none_or(|ni| *i != ni + 1)
+        })
+        .map(|(_, a)| PathBuf::from(a))
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     if debug {
@@ -49,12 +57,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     let cfg = config::load_config();
 
     if scan {
-        return run_scan(&repo_path, &cfg, debug, no_cache);
+        return run_scan(&repo_path, &cfg, debug, no_cache, neighbor_of);
     }
     ui::run(&repo_path, debug, no_cache)
 }
 
-fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool, no_cache: bool) -> Result<(), Box<dyn Error>> {
+fn run_scan(
+    repo_path: &std::path::Path,
+    cfg: &config::Config,
+    debug: bool,
+    no_cache: bool,
+    neighbor_of: Option<String>,
+) -> Result<(), Box<dyn Error>> {
     let t0 = Instant::now();
     let outcome = match engine::scan_with_cache(repo_path, cfg.max_commits, !no_cache) {
         Ok(o) => o,
@@ -149,6 +163,34 @@ fn run_scan(repo_path: &std::path::Path, cfg: &config::Config, debug: bool, no_c
             .map(|a| a.name.as_str())
             .unwrap_or("?");
         println!("  bf 1  {:>6} kept  {owner:<12} {path}", r.kept_total);
+    }
+
+    // F6: top-3 aristas de co-modificación (o vecinos de --neighbors).
+    let edges = engine::coupling(history, engine::Window::ALL, &|p| {
+        engine::is_ignored(p, &cfg.ignores)
+    });
+    if let Some(target) = neighbor_of {
+        let Some(fid) = history
+            .paths
+            .iter()
+            .position(|p| p.ends_with(target.as_str()) || p == &target)
+            .map(|i| engine::FileId(i as u32))
+        else {
+            println!("no encontre un path que calce con {target}");
+            return Ok(());
+        };
+        println!("vecinos de {target}:");
+        for (f, j, cooc) in engine::neighbors(&edges, fid, 5) {
+            let path = history.paths.get(f.0 as usize).map(String::as_str).unwrap_or("?");
+            println!("  {j:.2}  ×{cooc:<4} {path}");
+        }
+        return Ok(());
+    }
+    println!("coupling (co-modificacion, min 3):");
+    for e in edges.iter().take(3) {
+        let pa = history.paths.get(e.a.0 as usize).map(String::as_str).unwrap_or("?");
+        let pb = history.paths.get(e.b.0 as usize).map(String::as_str).unwrap_or("?");
+        println!("  {:.2}  ×{:<4} {pa} <-> {pb}", e.jaccard, e.cooc);
     }
     Ok(())
 }

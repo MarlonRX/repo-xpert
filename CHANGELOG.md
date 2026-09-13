@@ -2,6 +2,42 @@
 
 Formato de versiones: hitos del plan (`docs/plan/ROADMAP.md`).
 
+## F6 — coupling + rayon + cierre (2026-09-12)
+
+- `engine/metrics/coupling.rs` (ALGORITHMS §4): pares ordenados de `u32`,
+  cota de 200 archivos/commit, `min_co=3`, Jaccard; `neighbors()` top-k.
+  Test del par siempre-junto.
+- UI vista `5` indirecta: cursor `j/k` en churn/hotspots/ownership y
+  **Enter** abre los vecinos de co-modificación.
+- CLI: `gadv scan <repo> --neighbors <path>` (herramienta de verificación).
+- **rayon** en la ingesta: walk secuencial de metadatos + diffs paralelos
+  con `thread_local` del handle de gix + internado secuencial.
+- Fix de formato **v2**: los `Modification` de subtree se saltan (gix ya
+  reporta los hijos; antes metían rutas de directorio fantasma en churn y
+  coupling). El sample de contrato pasa a `cache_v2_sample.json`.
+
+### Números medidos (12 cores, debug build)
+
+| Pase | antes F6 | con rayon |
+|---|---|---|
+| Full 10k commits | 7.0 s | **1.25 s** (5.6×) |
+| Cache hit | 62–70 ms | sin cambio (no parsea) |
+
+### DoD de coupling
+
+Vecinos de `src/ui/state/mod.rs` en git-hero: `commands.rs` (0.67),
+`rendering/mod.rs` (0.50), `events/mod.rs` (0.46), `suggestions.rs`,
+`panels.rs` — el clúster real de UI que coevoluciona. (`keyboard.rs` no
+entra al top-5; el plan lo suponía: los datos mandan.)
+
+### Evaluación de cierre (regla VISION)
+
+El motor corre 5.6× más rápido que `git log --numstat` + parsing en el bench
+y abre un repo de 10k commits en ~60 ms desde caché. Las 4 métricas núcleo
+están vivas en TUI con scatter, barras, shares y vecinos. **El proyecto
+sobrevive su propia regla: sigue adelante.** Pendiente de decisión del autor:
+nombre público, README con capturas, y split a workspace (post-M5 del plan).
+
 ## F5 — ownership + bus factor (2026-09-12)
 
 - `engine/metrics/ownership.rs` (ALGORITHMS §3): kept[a,f] = adds[a] −

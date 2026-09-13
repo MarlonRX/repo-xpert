@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 pub type Oid = [u8; 20];
 
 /// Encoding del formato de caché (regla 1): subirlo invalida todo rebuild.
-pub const CACHE_FORMAT_VERSION: u32 = 1;
+/// v2: los `Modification` de subtree ya no se imputan como archivo (fantasma
+/// de directorio); los records viejos traían rutas de directorio.
+pub const CACHE_FORMAT_VERSION: u32 = 2;
 
 mod hex_oid {
     use serde::de::Error as _;

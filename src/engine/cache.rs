@@ -67,7 +67,7 @@ pub fn scan_with_cache(
 ) -> Result<CacheOutcome, EngineError> {
     if !use_cache {
         let repo = open_repo(repo_path)?;
-        let out = scan_repo(&repo, None, max_commits)?;
+        let out = scan_repo(repo_path, &repo, None, max_commits)?;
         return Ok(CacheOutcome {
             history: History {
                 commits: out.records,
@@ -101,7 +101,7 @@ pub fn scan_with_cache(
         // historial reescrito (amend/reset entre merges) y dejaría commits
         // inalcanzables en el resto del cache → rebuild limpio.
         let cached_set: HashSet<Oid> = cf.records.iter().map(|r| r.oid).collect();
-        let walked = scan_repo(&repo, Some(&cached_set), max_commits)?;
+        let walked = scan_repo(repo_path, &repo, Some(&cached_set), max_commits)?;
         if let Some(splice) = walked.splice
             && cf.records.first().is_some_and(|r| r.oid == splice)
         {
@@ -118,7 +118,7 @@ pub fn scan_with_cache(
         // Sin empalme (rebase/gc): rebuild total.
     }
 
-    let out = scan_repo(&repo, None, max_commits)?;
+    let out = scan_repo(repo_path, &repo, None, max_commits)?;
     let history = History {
         commits: out.records,
         authors: out.authors,

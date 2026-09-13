@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "head_oid": "abababababababababababababababababababab",
   "commit_count": 2,
   "authors": [{ "name": "Ana", "email": "ana@example.com" }],

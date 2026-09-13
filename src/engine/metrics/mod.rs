@@ -3,6 +3,7 @@
 // Sin trait Metric todavía: se extrae con la tercera repetición real.
 
 pub mod churn;
+pub mod coupling;
 pub mod hotspots;
 pub mod ownership;
 

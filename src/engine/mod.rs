@@ -18,6 +18,7 @@ pub use git::blob::head_locs;
 pub use git::walk::scan_history;
 pub use metrics::Window;
 pub use metrics::churn::{ChurnRow, churn};
+pub use metrics::coupling::{CouplingEdge, coupling, neighbors};
 pub use metrics::hotspots::{HotspotRow, hotspots, is_ignored};
 pub use metrics::ownership::{OwnershipRow, repo_risk, ownership};
 pub use model::{AuthorId, AuthorInfo, CommitRecord, FileId, FileStat, History, Oid};
